@@ -1,0 +1,4 @@
+0.000 pkt: 0 | Use your log file Processor
+0.001 ACK: 1 | Like this
+File transfer is finished.
+Goodput : 0.00 pkts/sec

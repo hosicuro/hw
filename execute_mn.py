@@ -47,7 +47,7 @@ def runMininet():
     Cleanup.cleanup()   #Cleaning up the Mininet before start
 
     "You can change the bottleneck link property by modifing these parameter"
-    myTopo = Assignment3Topo(bw_v = 10, delay_v="10ms", loss_v=0, queue_v=None)  #make test network topology
+    myTopo = Assignment3Topo(bw_v = 10, delay_v="25ms", loss_v=0, queue_v=45)  #make test network topology
     net = Mininet(topo=myTopo, link=TCLink) #make Mininet instance
     net.start()     #start Mininet
 
@@ -71,15 +71,13 @@ def runMininet():
     "If you want to test with ping and iperf, uncomment this"
     """
     net.pingFull([receiver,sender])
-    """
     net.iperf([receiver,sender],seconds=10)
+    """
 
     popens = {}
     "If your want to run your code, uncomment this (stderr=STDOUT shows error messages below too)"
-    """
     popens[receiver] = receiver.popen('python3','receiver.py', stderr=STDOUT)
     popens[sender] = sender.popen('python3','sender.py',recvAddr, str(windowSize), srcFilename, dstFilename, stderr=STDOUT)
-    """
     
 
     endTime = time()+300    #after 5 minutes mininet test will be shut
