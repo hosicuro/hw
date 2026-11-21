@@ -10,6 +10,7 @@ HDR = struct.Struct('!iB')              # seq: 4B signed int, type: 1B
 TYPE_NAME, TYPE_DATA, TYPE_FIN, TYPE_ACK = 0, 1, 2, 3
 RECV_PORT = 10080
 MAX_PAYLOAD = 1400 - HDR.size           # 헤더 포함 UDP 페이로드 1400 bytes 이하
+INIT_TIMEOUT = 1.0                      # 명세: 처음 timeout 1초
 
 
 def buildPackets(srcFilename, dstFilename):
@@ -18,7 +19,7 @@ def buildPackets(srcFilename, dstFilename):
         data = f.read()
     chunks = [data[i:i + MAX_PAYLOAD] for i in range(0, len(data), MAX_PAYLOAD)]
     if not chunks:
-        chunks = [b'']                  # 빈 파일이어도 FIN 하나는 보냄
+        chunks = [b'']
 
     packets = [HDR.pack(0, TYPE_NAME) + dstFilename.encode()]
     for i, chunk in enumerate(chunks):
@@ -32,7 +33,7 @@ def fileSender():
     logProc = logHandler()
 
     throughput = 0.0
-    avgRTT = -1                         # 5단계에서 계산 (-1이면 로그에 안 찍힘)
+    avgRTT = -1                         # 5단계에서 계산
     ##########################
     packets = buildPackets(srcFilename, dstFilename)
     total = len(packets)
@@ -41,13 +42,18 @@ def fileSender():
     sock.bind(('', 0))
     dest = (recvAddr, RECV_PORT)
 
-    # ---- 스레드가 공유하는 상태 ----
+    # ---- 스레드가 공유하는 상태 (모두 cond로 보호) ----
     base = 0                            # 가장 오래된 unACKed 패킷 번호
-    cond = threading.Condition()        # base 보호 + 대기/깨우기
+    next_seq = 0                        # 다음에 새로 보낼 패킷 번호
+    timer_start = None                  # 단일 타이머 시작 시각 (None = 꺼짐)
+    timeout_val = INIT_TIMEOUT
+    send_time = [0.0] * total           # 각 패킷을 마지막으로 보낸 시각
+    retx_count = 0
+    timeout_count = 0
+    cond = threading.Condition()
 
-    # 여기는 ack 스레드
     def ackReceiver():
-        nonlocal base
+        nonlocal base, timer_start
         while True:
             reply, _ = sock.recvfrom(2048)
             ack_num, ptype = HDR.unpack(reply[:HDR.size])
@@ -55,34 +61,58 @@ def fileSender():
                 continue
             logProc.writeAck(ack_num, 'received')
             with cond:
-                if ack_num + 1 > base:          # 새 ACK: 윈도우 전진
+                if ack_num + 1 > base:              # 새 ACK
                     base = ack_num + 1
+                    if base == next_seq:
+                        timer_start = None          # 중지: unACKed 없음
+                    else:
+                        timer_start = time()        # 재시작: unACKed 남음
                     cond.notify_all()
                 if base >= total:
                     return
+
+    def sendPacket(seq):
+        sock.sendto(packets[seq], dest)
+        send_time[seq] = time()
 
     logProc.startLogging(srcFilename + '_sending_log.txt')
     startTime = logProc.startTime
 
     threading.Thread(target=ackReceiver, daemon=True).start()
 
-    # 여기는 main 스레드
-    next_seq = 0
     with cond:
-        while next_seq < total:
-            while next_seq - base >= windowSize:    # 윈도우가 꽉 참
-                cond.wait()
-            sock.sendto(packets[next_seq], dest)
-            logProc.writePkt(next_seq, 'sent')
-            next_seq += 1
-        while base < total:                         # 마지막 ACK까지 대기
-            cond.wait()
+        while base < total:
+            now = time()
+
+            # (1) 타이머 만료 -> 가장 오래된 unACKed 패킷(base) 재전송
+            if timer_start is not None and now - timer_start >= timeout_val:
+                timeout_count += 1
+                logProc.writePkt(base, 'timeout (sent at {:.3f}, timer from {:.3f}, timeout {:.3f}s)'.format(
+                    send_time[base] - startTime, timer_start - startTime, timeout_val))
+                sendPacket(base)
+                logProc.writePkt(base, 'retransmitted')
+                retx_count += 1
+                timer_start = send_time[base]                # 만료 후 재시작
+                continue
+
+            # (2) 윈도우에 여유가 있으면 새 패킷 전송
+            if next_seq < total and next_seq - base < windowSize:
+                sendPacket(next_seq)
+                logProc.writePkt(next_seq, 'sent')
+                if timer_start is None:
+                    timer_start = send_time[next_seq]   # 시작
+                next_seq += 1
+                continue
+
+            # (3) 할 일 없음 -> ACK 도착 또는 타이머 만료까지 대기
+            remaining = timeout_val - (now - timer_start) if timer_start is not None else None
+            cond.wait(remaining)
 
     elapsed = time() - startTime
     throughput = total / elapsed
     logProc.writeEnd(throughput, avgRTT)
-    print('sender: {} packets, {:.3f}s, goodput {:.2f} pkts/sec'.format(
-        total, elapsed, throughput), flush=True)
+    print('sender: {} packets, {:.3f}s, goodput {:.2f} pkts/sec, retx {}, timeout {}'.format(
+        total, elapsed, throughput, retx_count, timeout_count), flush=True)
     sock.close()
     ##########################
 

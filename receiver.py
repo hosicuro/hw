@@ -9,7 +9,7 @@ from logHandler import logHandler
 HDR = struct.Struct('!iB')
 TYPE_NAME, TYPE_DATA, TYPE_FIN, TYPE_ACK = 0, 1, 2, 3
 RECV_PORT = 10080
-LINGER = 2.0                    # 전송 완료 후, 이 시간 동안 조용하면 종료
+LINGER = 3.0                    # 전송 완료 후, 이 시간 동안 조용하면 종료
 TMP_LOG = 'receiver_log.tmp'    # 파일명을 알기 전까지 쓰는 임시 로그 이름
 
 
